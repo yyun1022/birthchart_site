@@ -236,6 +236,8 @@ def chart(payload: dict):
             xx, _ = swe.calc_ut(jd_ut, p, FLAGS)
             planets_out[name] = deg_to_sign(xx[0])
 
+        hsys = (payload.get("house_system") or "P").upper()[:1]
+        hsys_b = hsys.encode("ascii")
         cusps, ascmc = swe.houses_ex(jd_ut, lat, lon, hsys)
         asc = deg_to_sign(ascmc[0])
         mc = deg_to_sign(ascmc[1])
