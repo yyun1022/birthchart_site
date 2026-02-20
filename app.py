@@ -1,24 +1,24 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
-
 import swisseph as swe
+
 
 app = FastAPI()
 
-
-# -----------------------
-# Swiss Ephemeris setup
-# -----------------------
+# --- Swiss Ephemeris setup ---
 EPHE_PATH = os.environ.get("SWEPHE_PATH", os.path.join(os.path.dirname(__file__), "ephe"))
 swe.set_ephe_path(EPHE_PATH)
 
-FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED  # <-- force Swiss ephemeris (.se1 files)
+# Use Swiss Ephemeris (not Moshier)
+swe.set_ephe_flag(swe.FLG_SWIEPH)
+
+FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
 PLANETS = {
     "Sun": swe.SUN,
@@ -31,76 +31,97 @@ PLANETS = {
     "Uranus": swe.URANUS,
     "Neptune": swe.NEPTUNE,
     "Pluto": swe.PLUTO,
+    # Optional: True Node
+    "TrueNode": swe.TRUE_NODE,
 }
 
+SIGNS = [
+    "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+    "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+]
+
+
 def ensure_ephe_present():
+    # minimal sanity check: ephe folder exists + has at least one .se1
     if not os.path.isdir(EPHE_PATH):
-        raise RuntimeError(f"Ephemeris folder not found: {EPHE_PATH}")
-    if not any(name.endswith(".se1") for name in os.listdir(EPHE_PATH)):
-        raise RuntimeError(
-            f"No .se1 files found in {EPHE_PATH}. "
-            f"On Render, make sure download_ephe.py ran during build."
-        )
+        raise RuntimeError(f"EPHE_PATH not found: {EPHE_PATH}")
+    found = any(fn.endswith(".se1") for fn in os.listdir(EPHE_PATH))
+    if not found:
+        raise RuntimeError(f"No .se1 files found in EPHE_PATH: {EPHE_PATH}")
+
+
+def deg_to_sign(lon_deg: float):
+    lon_deg = lon_deg % 360.0
+    sign_idx = int(lon_deg // 30)
+    deg_in_sign = lon_deg - sign_idx * 30
+    return {
+        "lon": round(lon_deg, 6),
+        "sign": SIGNS[sign_idx],
+        "deg": round(deg_in_sign, 6),
+    }
+
 
 def local_to_utc(local_dt_str: str, tz_name: str) -> datetime:
-    local_naive = datetime.strptime(local_dt_str, "%Y-%m-%d %H:%M")
-    local_aware = local_naive.replace(tzinfo=ZoneInfo(tz_name))
-    return local_aware.astimezone(ZoneInfo("UTC"))
+    # expects "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS"
+    fmt = "%Y-%m-%d %H:%M:%S" if len(local_dt_str.strip()) > 16 else "%Y-%m-%d %H:%M"
+    naive = datetime.strptime(local_dt_str.strip(), fmt)
+    tz = ZoneInfo(tz_name)
+    local = naive.replace(tzinfo=tz)
+    return local.astimezone(timezone.utc)
+
 
 def utc_to_jd_ut(utc_dt: datetime) -> float:
+    # Swiss Ephemeris wants UT Julian Day
+    y = utc_dt.year
+    m = utc_dt.month
+    d = utc_dt.day
     hour = utc_dt.hour + utc_dt.minute / 60.0 + utc_dt.second / 3600.0
-    return swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, hour, swe.GREG_CAL)
+    return swe.julday(y, m, d, hour, swe.GREG_CAL)
 
-def deg_to_sign(deg: float) -> dict:
-    signs = ["Aries","Taurus","Gemini","Cancer","Leo","Virgo","Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"]
-    deg = deg % 360.0
-    sign_index = int(deg // 30)
-    within = deg - sign_index * 30
-    return {"longitude": deg, "sign": signs[sign_index], "degree_in_sign": within}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
+    html = """
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <title>Swiss Ephemeris Birth Chart</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; }
-    input, button { padding: 10px; font-size: 16px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-    #results { white-space: pre; background: #f6f6f6; padding: 12px; border-radius: 8px; overflow-x: auto; }
-    small { color: #555; }
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 40px; }
+    .row { display:flex; gap:12px; margin: 12px 0; align-items:center; }
+    input, select, button { font-size: 18px; padding: 12px; }
+    input[type="text"] { width: 520px; }
+    pre { background:#f6f6f6; padding: 16px; border-radius: 12px; overflow:auto; }
+    small { color: #444; }
   </style>
 </head>
 <body>
   <h1>Swiss Ephemeris Birth Chart</h1>
   <p><small>This uses Swiss Ephemeris .se1 files downloaded at deploy-time, plus real timezone conversion.</small></p>
 
-  <<div class="row">
-  <input id="date" type="date" />
-  <input id="time" type="time" />
-  <input id="place" type="text" placeholder="Place, e.g. Xi'an" style="flex:1; min-width: 280px;" />
-  <button onclick="searchPlace()">Search</button>
-</div>
+  <div class="row">
+    <input id="date" type="date" />
+    <input id="time" type="time" />
+    <input id="place" type="text" placeholder="Place, e.g. George Town" />
+    <button onclick="searchPlace()">Search</button>
+  </div>
 
-<div class="row">
-  <select id="placeSelect" style="flex:1; min-width: 420px;" disabled>
-    <option>Search a place first…</option>
-  </select>
-  <button onclick="run()" id="calcBtn" disabled>Calculate</button>
-</div>
+  <div class="row">
+    <select id="placeSelect" style="flex:1" disabled>
+      <option>Search a place first…</option>
+    </select>
+    <button onclick="run()" id="calcBtn" disabled>Calculate</button>
+  </div>
 
-<div class="row">
-  <small id="placeInfo"></small>
-</div>
+  <div class="row">
+    <small id="placeInfo"></small>
+  </div>
 
-  <h3>Results</h3>
-  <div id="results">Waiting…</div>
+  <h2>Results</h2>
+  <pre id="results">{}</pre>
 
 <script>
-
 let placeCandidates = [];
 
 async function searchPlace() {
@@ -108,9 +129,11 @@ async function searchPlace() {
   const sel = document.getElementById("placeSelect");
   const info = document.getElementById("placeInfo");
   const calcBtn = document.getElementById("calcBtn");
+  const results = document.getElementById("results");
 
   if (!q) return;
 
+  results.textContent = "{}";
   info.textContent = "Searching…";
   sel.disabled = true;
   calcBtn.disabled = true;
@@ -120,8 +143,8 @@ async function searchPlace() {
   const candidates = await r.json();
   placeCandidates = candidates;
 
-  if (!candidates.length) {
-    info.textContent = "No matches. Try adding country/region (e.g. Xi'an China).";
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    info.textContent = "No matches. Try adding country/region (e.g. George Town Malaysia).";
     sel.innerHTML = `<option>No matches</option>`;
     return;
   }
@@ -153,11 +176,11 @@ async function run() {
   const results = document.getElementById("results");
 
   if (!date || !time) {
-    results.textContent = "Please fill date and time.";
+    results.textContent = JSON.stringify({error: "Please fill date and time."}, null, 2);
     return;
   }
   if (sel.disabled) {
-    results.textContent = "Please search and select a place first.";
+    results.textContent = JSON.stringify({error: "Please search and select a place first."}, null, 2);
     return;
   }
 
@@ -183,109 +206,103 @@ async function run() {
   const out = await r2.json();
   results.textContent = JSON.stringify(out, null, 2);
 }
-
 </script>
 </body>
 </html>
 """
+    return HTMLResponse(html)
+
 
 @app.get("/api/resolve_place")
 def resolve_place(q: str = Query(..., min_length=2)):
-    # Open-Meteo Geocoding API (free, no key)
-    url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {
-        "name": q,
-        "count": 8,
-        "language": "en",
-        "format": "json",
-    }
-    resp = requests.get(url, params=params, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
+    # Open-Meteo Geocoding API (free, no key, returns IANA timezone)
+    try:
+        url = "https://geocoding-api.open-meteo.com/v1/search"
+        params = {"name": q, "count": 8, "language": "en", "format": "json"}
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results") or []
+        out = []
+        for r in results:
+            display = f"{r.get('name')}, {r.get('admin1') or ''} {r.get('country') or ''}".replace("  ", " ").strip().strip(",")
+            out.append({
+                "display_name": display,
+                "lat": float(r["latitude"]),
+                "lon": float(r["longitude"]),
+                "tz": r.get("timezone") or "UTC"
+            })
+        return JSONResponse(out)
+    except Exception as e:
+        return JSONResponse({"error": str(e), "where": "resolve_place"}, status_code=500)
 
-    results = data.get("results") or []
-    out = []
-    for r in results:
-        # Open-Meteo returns timezone already (IANA name)
-        out.append({
-            "display_name": f"{r.get('name')}, {r.get('admin1') or ''} {r.get('country') or ''}".replace("  ", " ").strip().strip(","),
-            "lat": float(r["latitude"]),
-            "lon": float(r["longitude"]),
-            "tz": r.get("timezone") or "UTC"
-        })
-    return JSONResponse(out)
 
 @app.post("/api/chart")
 def chart(payload: dict):
     try:
         ensure_ephe_present()
 
-        local_dt_str = payload["local_datetime"]
-        tz_name = payload["tz"]
-        lat = float(payload["lat"])
-        lon = float(payload["lon"])
-        hsys = (payload.get("house_system") or "P").upper()
-        if len(hsys) != 1:
-            hsys = "P"
+        local_dt_str = payload.get("local_datetime")
+        tz_name = payload.get("tz")
+        lat = float(payload.get("lat"))
+        lon = float(payload.get("lon"))
 
+        if not local_dt_str or not tz_name:
+            return JSONResponse({"error": "Missing local_datetime or tz"}, status_code=400)
+
+        # Time conversion
         utc_dt = local_to_utc(local_dt_str, tz_name)
         jd_ut = utc_to_jd_ut(utc_dt)
 
+        # Planets
         planets_out = {}
         for name, p in PLANETS.items():
             xx, _ = swe.calc_ut(jd_ut, p, FLAGS)
             planets_out[name] = deg_to_sign(xx[0])
 
-# Houses / angles (robust across pyswisseph return formats)
-    res = swe.houses_ex(jd_ut, lat, lon, b"P")
+        # Houses (safe across pyswisseph return formats)
+        hsys = (payload.get("house_system") or "P").upper()[:1]  # 1 char
+        hsys_b = hsys.encode("ascii")  # must be bytes length 1
 
-# res can be (cusps, ascmc) OR just cusps depending on build
-    if isinstance(res, (list, tuple)) and len(res) == 2 and isinstance(res[0], (list, tuple)):
-        cusps = res[0]
-        ascmc = res[1]
-    else:
-        cusps = res
-        ascmc = None
+        res = swe.houses_ex(jd_ut, lat, lon, hsys_b)
 
-# cusps sometimes has length 12 (0..11) or 13 (1..12 with a dummy 0)
-# Normalize to a list of 12 values in order house 1..12
-    cusps_list = list(cusps)
+        # res can be (cusps, ascmc) OR just cusps depending on build
+        if isinstance(res, (list, tuple)) and len(res) == 2 and isinstance(res[0], (list, tuple)):
+            cusps = res[0]
+            ascmc = res[1]
+        else:
+            cusps = res
+            ascmc = None
 
-if len(cusps_list) == 13:
-    # assume index 1..12 are houses
-    cusps_12 = cusps_list[1:13]
-elif len(cusps_list) >= 12:
-    # assume first 12 are houses
-    cusps_12 = cusps_list[:12]
-else:
-    raise RuntimeError(f"Unexpected cusps length: {len(cusps_list)}")
+        cusps_list = list(cusps)
+        if len(cusps_list) == 13:
+            cusps_12 = cusps_list[1:13]  # 1..12
+        elif len(cusps_list) >= 12:
+            cusps_12 = cusps_list[:12]   # 0..11
+        else:
+            raise RuntimeError(f"Unexpected cusps length: {len(cusps_list)}")
 
-house_cusps = {str(i+1): deg_to_sign(cusps_12[i]) for i in range(12)}
+        house_cusps = {str(i + 1): deg_to_sign(cusps_12[i]) for i in range(12)}
 
-# Angles: if ascmc is missing, compute ASC/MC from cusps not possible reliably;
-# but most builds provide ascmc. We'll handle both safely.
-if ascmc and len(ascmc) >= 2:
-    asc = deg_to_sign(ascmc[0])
-    mc = deg_to_sign(ascmc[1])
-else:
-    asc = None
-    mc = None
-
+        asc = deg_to_sign(ascmc[0]) if (ascmc and len(ascmc) >= 1) else None
+        mc = deg_to_sign(ascmc[1]) if (ascmc and len(ascmc) >= 2) else None
 
         return JSONResponse({
-            "code_version": "houses-bytes-hardcoded-v1",
+            "code_version": "stable-v1",
             "input": {
                 "local_datetime": local_dt_str,
                 "tz": tz_name,
                 "utc_datetime": utc_dt.isoformat(),
-                "lat": lat, "lon": lon,
-                "house_system": hsys,
+                "lat": lat,
+                "lon": lon,
                 "jd_ut": jd_ut,
-                "ephe_path": EPHE_PATH
+                "ephe_path": EPHE_PATH,
+                "house_system": hsys
             },
             "angles": {"Asc": asc, "MC": mc},
             "planets": planets_out,
             "house_cusps": house_cusps
         })
+
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e), "where": "chart"}, status_code=500)
