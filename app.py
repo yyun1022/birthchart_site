@@ -236,11 +236,41 @@ def chart(payload: dict):
             xx, _ = swe.calc_ut(jd_ut, p, FLAGS)
             planets_out[name] = deg_to_sign(xx[0])
 
-        cusps, ascmc = swe.houses_ex(jd_ut, lat, lon, b"P")
-        asc = deg_to_sign(ascmc[0])
-        mc = deg_to_sign(ascmc[1])
+# Houses / angles (robust across pyswisseph return formats)
+    res = swe.houses_ex(jd_ut, lat, lon, b"P")
 
-        house_cusps = {str(i): deg_to_sign(cusps[i]) for i in range(1, 13)}
+# res can be (cusps, ascmc) OR just cusps depending on build
+    if isinstance(res, (list, tuple)) and len(res) == 2 and isinstance(res[0], (list, tuple)):
+        cusps = res[0]
+        ascmc = res[1]
+    else:
+        cusps = res
+        ascmc = None
+
+# cusps sometimes has length 12 (0..11) or 13 (1..12 with a dummy 0)
+# Normalize to a list of 12 values in order house 1..12
+    cusps_list = list(cusps)
+
+if len(cusps_list) == 13:
+    # assume index 1..12 are houses
+    cusps_12 = cusps_list[1:13]
+elif len(cusps_list) >= 12:
+    # assume first 12 are houses
+    cusps_12 = cusps_list[:12]
+else:
+    raise RuntimeError(f"Unexpected cusps length: {len(cusps_list)}")
+
+house_cusps = {str(i+1): deg_to_sign(cusps_12[i]) for i in range(12)}
+
+# Angles: if ascmc is missing, compute ASC/MC from cusps not possible reliably;
+# but most builds provide ascmc. We'll handle both safely.
+if ascmc and len(ascmc) >= 2:
+    asc = deg_to_sign(ascmc[0])
+    mc = deg_to_sign(ascmc[1])
+else:
+    asc = None
+    mc = None
+
 
         return JSONResponse({
             "code_version": "houses-bytes-hardcoded-v1",
