@@ -15,8 +15,7 @@ app = FastAPI()
 EPHE_PATH = os.environ.get("SWEPHE_PATH", os.path.join(os.path.dirname(__file__), "ephe"))
 swe.set_ephe_path(EPHE_PATH)
 
-# Use Swiss Ephemeris (not Moshier)
-swe.set_ephe_flag(swe.FLG_SWIEPH)
+
 
 FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
