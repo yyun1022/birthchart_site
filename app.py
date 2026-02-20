@@ -78,46 +78,93 @@ def home():
   <h1>Swiss Ephemeris Birth Chart</h1>
   <p><small>This uses Swiss Ephemeris .se1 files downloaded at deploy-time, plus real timezone conversion.</small></p>
 
-  <div class="row">
-    <input id="date" type="date" />
-    <input id="time" type="time" />
-    <input id="place" type="text" placeholder="Place, e.g. Xi'an, China" style="flex:1; min-width: 280px;" />
-    <button onclick="run()">Calculate</button>
-  </div>
+  <<div class="row">
+  <input id="date" type="date" />
+  <input id="time" type="time" />
+  <input id="place" type="text" placeholder="Place, e.g. Xi'an" style="flex:1; min-width: 280px;" />
+  <button onclick="searchPlace()">Search</button>
+</div>
 
-  <div class="row">
-    <small id="placeInfo"></small>
-  </div>
+<div class="row">
+  <select id="placeSelect" style="flex:1; min-width: 420px;" disabled>
+    <option>Search a place first…</option>
+  </select>
+  <button onclick="run()" id="calcBtn" disabled>Calculate</button>
+</div>
+
+<div class="row">
+  <small id="placeInfo"></small>
+</div>
 
   <h3>Results</h3>
   <div id="results">Waiting…</div>
 
 <script>
+
+let placeCandidates = [];
+
+async function searchPlace() {
+  const q = document.getElementById("place").value.trim();
+  const sel = document.getElementById("placeSelect");
+  const info = document.getElementById("placeInfo");
+  const calcBtn = document.getElementById("calcBtn");
+
+  if (!q) return;
+
+  info.textContent = "Searching…";
+  sel.disabled = true;
+  calcBtn.disabled = true;
+  sel.innerHTML = `<option>Searching…</option>`;
+
+  const r = await fetch(`/api/resolve_place?q=${encodeURIComponent(q)}`);
+  const candidates = await r.json();
+  placeCandidates = candidates;
+
+  if (!candidates.length) {
+    info.textContent = "No matches. Try adding country/region (e.g. Xi'an China).";
+    sel.innerHTML = `<option>No matches</option>`;
+    return;
+  }
+
+  sel.innerHTML = candidates.map((c, i) =>
+    `<option value="${i}">${c.display_name} (tz: ${c.tz})</option>`
+  ).join("");
+
+  sel.disabled = false;
+  calcBtn.disabled = false;
+
+  const c0 = candidates[0];
+  info.textContent = `Selected: ${c0.display_name} | lat=${c0.lat} lon=${c0.lon} | tz=${c0.tz}`;
+}
+
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "placeSelect") {
+    const i = parseInt(e.target.value, 10);
+    const c = placeCandidates[i];
+    document.getElementById("placeInfo").textContent =
+      `Selected: ${c.display_name} | lat=${c.lat} lon=${c.lon} | tz=${c.tz}`;
+  }
+});
+
 async function run() {
   const date = document.getElementById("date").value;
   const time = document.getElementById("time").value;
-  const place = document.getElementById("place").value;
+  const sel = document.getElementById("placeSelect");
+  const results = document.getElementById("results");
 
-  if (!date || !time || !place) {
-    document.getElementById("results").textContent = "Please fill date, time, and place.";
+  if (!date || !time) {
+    results.textContent = "Please fill date and time.";
+    return;
+  }
+  if (sel.disabled) {
+    results.textContent = "Please search and select a place first.";
     return;
   }
 
-  document.getElementById("results").textContent = "Resolving place…";
+  const idx = parseInt(sel.value, 10);
+  const c = placeCandidates[idx];
 
-  const r1 = await fetch(`/api/resolve_place?q=${encodeURIComponent(place)}`);
-  const candidates = await r1.json();
-  if (!candidates.length) {
-    document.getElementById("results").textContent =
-      "No place found. Try adding country/state, e.g. 'Xi\\'an, Shaanxi, China'.";
-    return;
-  }
-
-  const c = candidates[0];
-  document.getElementById("placeInfo").textContent =
-    `Using: ${c.display_name} | lat=${c.lat} lon=${c.lon} | tz=${c.tz}`;
-
-  document.getElementById("results").textContent = "Calculating…";
+  results.textContent = "Calculating…";
 
   const payload = {
     local_datetime: `${date} ${time}`,
@@ -134,8 +181,9 @@ async function run() {
   });
 
   const out = await r2.json();
-  document.getElementById("results").textContent = JSON.stringify(out, null, 2);
+  results.textContent = JSON.stringify(out, null, 2);
 }
+
 </script>
 </body>
 </html>
