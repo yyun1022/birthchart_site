@@ -236,15 +236,14 @@ def chart(payload: dict):
             xx, _ = swe.calc_ut(jd_ut, p, FLAGS)
             planets_out[name] = deg_to_sign(xx[0])
 
-        hsys = (payload.get("house_system") or "P").upper()[:1]
-        hsys_b = hsys.encode("ascii")
-        cusps, ascmc = swe.houses_ex(jd_ut, lat, lon, hsys)
+        cusps, ascmc = swe.houses_ex(jd_ut, lat, lon, b"P")
         asc = deg_to_sign(ascmc[0])
         mc = deg_to_sign(ascmc[1])
 
         house_cusps = {str(i): deg_to_sign(cusps[i]) for i in range(1, 13)}
 
         return JSONResponse({
+            "code_version": "houses-bytes-hardcoded-v1",
             "input": {
                 "local_datetime": local_dt_str,
                 "tz": tz_name,
