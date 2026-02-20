@@ -6,11 +6,11 @@ import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from timezonefinder import TimezoneFinder
+
 import swisseph as swe
 
 app = FastAPI()
-tf = TimezoneFinder()
+
 
 # -----------------------
 # Swiss Ephemeris setup
@@ -143,19 +143,28 @@ async function run() {
 
 @app.get("/api/resolve_place")
 def resolve_place(q: str = Query(..., min_length=2)):
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"format": "json", "q": q, "limit": 5}
-    headers = {"User-Agent": "birthchart-render-mvp/1.0"}
-    resp = requests.get(url, params=params, headers=headers, timeout=15)
+    # Open-Meteo Geocoding API (free, no key)
+    url = "https://geocoding-api.open-meteo.com/v1/search"
+    params = {
+        "name": q,
+        "count": 8,
+        "language": "en",
+        "format": "json",
+    }
+    resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     data = resp.json()
 
+    results = data.get("results") or []
     out = []
-    for item in data:
-        lat = float(item["lat"])
-        lon = float(item["lon"])
-        tz = tf.timezone_at(lat=lat, lng=lon) or "UTC"
-        out.append({"display_name": item.get("display_name", q), "lat": lat, "lon": lon, "tz": tz})
+    for r in results:
+        # Open-Meteo returns timezone already (IANA name)
+        out.append({
+            "display_name": f"{r.get('name')}, {r.get('admin1') or ''} {r.get('country') or ''}".replace("  ", " ").strip().strip(","),
+            "lat": float(r["latitude"]),
+            "lon": float(r["longitude"]),
+            "tz": r.get("timezone") or "UTC"
+        })
     return JSONResponse(out)
 
 @app.post("/api/chart")
